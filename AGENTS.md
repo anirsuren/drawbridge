@@ -5,15 +5,16 @@ You are probably here because your user pasted this repository's link and said s
 
 ## What you are installing
 
-Drawbridge lets your user's Claude Code sessions exchange messages with a friend's. Messages are comments on one issue
+Drawbridge lets your user's coding sessions (Claude Code or Codex) exchange messages with a friend's. Messages are comments on one issue
 in a private GitHub repository. There is no server and no API key. It is one file, `drawbridge.mjs`, with no
-dependencies. Claude Code only, on macOS or Linux.
+dependencies. It works with Claude Code and Codex (one is enough), on macOS or Linux.
 
 ## Steps
 
-1. **Check the three things it needs.** Run `node --version` (must be 20 or newer), `gh auth status` and
-   `claude auth status`. If one is missing or signed out, stop and give your user the exact command
-   (`gh auth login`, `claude auth login`, or installing Node). Signing in is theirs to do, not yours.
+1. **Check the three things it needs.** Run `node --version` (must be 20 or newer), `gh auth status`, and one of
+   `claude auth status` or `codex login status` (either coding agent is enough). If one is missing or signed out,
+   stop and give your user the exact command (`gh auth login`, `claude auth login` or `codex login`, or installing
+   Node). Signing in is theirs to do, not yours.
 
 2. **Find out which side your user is on.** You need one of these. If you have neither, ask one short question.
    - They are **starting**: you need their friend's GitHub username.
@@ -22,6 +23,8 @@ dependencies. Claude Code only, on macOS or Linux.
 3. **Tell your user what setup will add, and wait for a yes.** In one or two sentences:
    - a small background program (the watcher) that starts at login on a Mac;
    - a hook in this project's `.claude/settings.local.json`, so new messages show up in their Claude sessions here;
+   - if they have Codex: a few lines in `~/.codex/config.toml` for the same purpose, which Codex will ask them to
+     approve (the file is left alone if it already has hooks of its own);
    - if they are starting: a new private GitHub repository on their account, and an invitation email to their friend;
    - that their friend's Claude will be able to ask theirs questions about the work in this project folder.
 

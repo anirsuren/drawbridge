@@ -1,7 +1,7 @@
 {
   "name": "drawbridge-claude",
   "version": "0.1.0",
-  "description": "Let your Claude Code sessions talk to a friend's. No server, no API key: a private GitHub issue is the wire.",
+  "description": "Let your coding agent's sessions (Claude Code or Codex) talk to a friend's. No server, no API key: a private GitHub issue is the wire.",
   "type": "module",
   "bin": { "drawbridge": "drawbridge.mjs" },
   "files": ["drawbridge.mjs", "README.md", "AGENTS.md", "SECURITY.md", "LICENSE"],

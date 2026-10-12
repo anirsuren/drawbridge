@@ -1,4 +1,4 @@
-// End-to-end tests with two or three different accounts, offline. Stand-ins replace `gh` and `claude` (test/stubs),
+// End-to-end tests with two or three different accounts, offline. Stand-ins replace `gh`, `claude` and `codex` (test/stubs),
 // so the real script runs, as real processes, against a pretend GitHub thread kept in a temp file.
 // Run with: node --test test/e2e.test.mjs
 import test from "node:test";
@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const TOOL = join(here, "..", "drawbridge.mjs"), GH = join(here, "stubs", "gh.mjs"), CLAUDE = join(here, "stubs", "claude.mjs");
+const TOOL = join(here, "..", "drawbridge.mjs"), GH = join(here, "stubs", "gh.mjs"), CLAUDE = join(here, "stubs", "claude.mjs"), CODEX = join(here, "stubs", "codex.mjs");
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /** A fresh pretend GitHub and up to three computers, each with a project folder that is a git checkout. */
@@ -33,6 +33,8 @@ function world() {
     }
     return { login, project, env: {
       ...process.env, DRAWBRIDGE_GH: GH, DRAWBRIDGE_CLAUDE: CLAUDE, DRAWBRIDGE_STATE_DIR: join(dir, login, "state"), DRAWBRIDGE_PROJECTS_DIR: join(dir, login, "claude-projects"),
+      // No Codex unless a test gives one: the real one must never be reached from here.
+      DRAWBRIDGE_CODEX: "", DRAWBRIDGE_CODEX_HOME: join(dir, login, "codex-home"),
       DRAWBRIDGE_REPO: "", DRAWBRIDGE_NO_FETCH: "1", DRAWBRIDGE_NO_LOGIN_ITEM: "1", DRAWBRIDGE_POLL_MS: "250", DRAWBRIDGE_BEAT_MS: "600", DRAWBRIDGE_ONLINE_MS: "6000",
       DRAWBRIDGE_NO_HOOK: "", STUB_DB: db, STUB_LOGIN: login, ...extra } };
   };
@@ -331,5 +333,89 @@ test("the hourly limit counts every answer, survives a restart, and is announced
     await w.run(w.a, ["ask", "--wait", "3", "And another?"]);
     await sleep(1500);
     assert.equal(w.messages().filter((c) => c.body.includes("which is its limit")).length, 1, "the refusal is posted once, not once per question");
+  } finally { w.stop(); }
+});
+
+/** A Codex session file, as Codex Desktop and the Codex command write them. */
+function codexSession(who, id, title, said = []) {
+  const home = who.env.DRAWBRIDGE_CODEX_HOME, day = join(home, "sessions", "2026", "01", "02");
+  mkdirSync(day, { recursive: true });
+  const lines = [{ type: "session_meta", payload: { id, cwd: who.project, thread_source: "user", originator: "Codex Desktop", base_instructions: "x".repeat(2500) } },
+    ...said.map(([type, message]) => ({ type: "event_msg", payload: { type, message } }))];
+  writeFileSync(join(day, `rollout-2026-01-02T03-04-05-${id}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+  writeFileSync(join(home, "session_index.jsonl"), `${JSON.stringify({ id, thread_name: title })}\n`, { flag: "a" });
+}
+
+test("a computer with only Codex sets up, lists its Codex sessions and answers from a copy of the one asked about", async () => {
+  const w = world();
+  try {
+    const only = { DRAWBRIDGE_CLAUDE: join(w.dir, "no-claude-here"), DRAWBRIDGE_CODEX: CODEX };
+    Object.assign(w.b.env, only);
+    mkdirSync(w.b.env.DRAWBRIDGE_CODEX_HOME, { recursive: true });
+    writeFileSync(join(w.b.env.DRAWBRIDGE_CODEX_HOME, "config.toml"), 'model = "some-model"\n');
+    await connected(w);
+    const checked = await w.run(w.b, ["doctor"]);
+    assert.match(checked.out, /OK {2,}signed in: Codex /);
+    assert.match(checked.out, /Connected\./);
+    assert.match(readFileSync(join(w.b.env.DRAWBRIDGE_CODEX_HOME, "config.toml"), "utf8"), /# drawbridge:begin[^\n]*\n\[\[hooks\.UserPromptSubmit\]\]\nhooks = \[\{ type = "command", command = 'node "[^']+drawbridge\.mjs" inbox --hook --codex', timeout = 15 \}\]\n# drawbridge:end/);
+    codexSession(w.b, "33333333-3333-4333-8333-333333333333", "Billing rewrite");
+    w.watch(w.b);
+    await w.until(async () => (await w.run(w.a, ["sessions"])).out.includes("- Billing rewrite [Codex]"), "ada sees grace's Codex session, marked as Codex");
+    const asked = await w.run(w.a, ["ask", "--wait", "45", "Is billing done?"]);
+    assert.match(asked.out, /CODEX COPY of session 33333333-3333-4333-8333-333333333333\. Asked: Is billing done\? \| told it cannot read files: true/);
+    assert.match(asked.out, /Answered by a copy of grace's Codex session "Billing rewrite"/);
+    // The hook Codex runs is one for every folder, so it speaks only inside a folder that was shared.
+    const inside = await w.run(w.b, ["inbox", "--hook", "--codex"], JSON.stringify({ session_id: "cx-1", cwd: w.b.project }));
+    assert.match(inside.out, /ada asks \(ref [^)]+\):\n-----drawbridge-[0-9a-f]{8}-----\nIs billing done\?/);
+    assert.equal((await w.run(w.b, ["inbox", "--hook", "--codex"], JSON.stringify({ session_id: "cx-2", cwd: tmpdir() }))).out, "", "nothing is shown in a folder that was not shared");
+    assert.equal((await w.run(w.b, ["inbox", "--hook", "--codex"], "")).out, "", "nor when Codex says nothing about where it is");
+    await w.run(w.b, ["unshare"]);
+    assert.equal(readFileSync(join(w.b.env.DRAWBRIDGE_CODEX_HOME, "config.toml"), "utf8").trim(), 'model = "some-model"', "unsharing the last folder leaves Codex's settings as they were");
+  } finally { w.stop(); }
+});
+
+test("when Claude cannot answer, Codex answers from the end of the session's conversation, and says so; and the other way round", async () => {
+  const w = world();
+  try {
+    Object.assign(w.b.env, { DRAWBRIDGE_CODEX: CODEX });
+    await connected(w);
+    assert.match((await w.run(w.b, ["doctor"])).out, /OK {2,}signed in: Claude Code and Codex /);
+    const id = "44444444-4444-4444-8444-444444444444", at = join(w.b.env.DRAWBRIDGE_PROJECTS_DIR, "root");
+    mkdirSync(at, { recursive: true });
+    writeFileSync(join(at, `${id}.jsonl`), [
+      { type: "user", cwd: w.b.project, sessionId: id, message: { role: "user", content: "the launch is on Friday. key sk_live_abcdefgh12345678" } },
+      { type: "user", cwd: w.b.project, sessionId: id, message: { role: "user", content: [{ type: "tool_result", content: "TOOL-OUTPUT " + "y".repeat(2500) }] } },
+      { type: "assistant", sessionId: id, message: { role: "assistant", content: [{ type: "text", text: "Noted, Friday." }, { type: "tool_use", name: "Read", input: {} }] } },
+      { type: "custom-title", customTitle: "Launch plan", sessionId: id }].map((line) => JSON.stringify(line)).join("\n") + "\n");
+    const out = w.watch(w.b, { STUB_CLAUDE_LIVE_FAIL: "1" });
+    await w.until(async () => (await w.run(w.a, ["status"])).out.includes("grace is online"), "grace online");
+    const handed = await w.run(w.a, ["ask", "--wait", "45", "When is the launch?"]);
+    assert.match(handed.out, /CODEX FROM THE CONVERSATION\. Asked: When is the launch\? \| saw what the user said: true \| saw the reply: true \| saw a key: false \| saw tool output: false/);
+    assert.match(handed.out, /Answered by Codex reading the end of the conversation of grace's session "Launch plan"[^\n]*because Claude Code could not answer just now; it could not open the session's files/);
+    out.kill();
+    // The other way: a Codex session whose own agent has run out is answered by Claude, from its conversation.
+    codexSession(w.b, "55555555-5555-4555-8555-555555555555", "Pricing page", [["user_message", "the launch is on Friday"], ["agent_message", "Noted, Friday."]]);
+    w.watch(w.b, { STUB_CODEX_FAIL: "1" });
+    await sleep(800);
+    const back = await w.run(w.a, ["ask", "--wait", "45", "--to", "pricing", "And the pricing page?"]);
+    assert.match(back.out, /Answered by Claude Code reading the end of the conversation of grace's session "Pricing page"[^\n]*because Codex could not answer just now/);
+  } finally { w.stop(); }
+});
+
+test("the owner can keep each conversation with its own agent: with one agent named, the other never stands in", async () => {
+  const w = world();
+  try {
+    Object.assign(w.b.env, { DRAWBRIDGE_CODEX: CODEX });
+    await connected(w);
+    const listed = await w.run(w.b, ["agents", "claude"]);
+    assert.match(listed.out, /Claude Code: installed\nCodex: installed \(not used: switched off here\)\n\nOnly Claude Code is used\./);
+    session(w, w.b, "66666666-6666-4666-8666-666666666666", "Roadmap");
+    codexSession(w.b, "77777777-7777-4777-8777-777777777777", "Hidden from friends");
+    w.watch(w.b, { STUB_CLAUDE_LIVE_FAIL: "1", STUB_CLAUDE_FAIL: "1" });
+    await w.until(async () => (await w.run(w.a, ["sessions"])).out.includes("- Roadmap"), "the Claude session is listed");
+    assert.doesNotMatch((await w.run(w.a, ["sessions"])).out, /Hidden from friends/, "a session of an agent that is switched off is not offered");
+    const asked = await w.run(w.a, ["ask", "--wait", "45", "What is on the roadmap?"]);
+    assert.doesNotMatch(asked.out, /CODEX/);
+    assert.match(asked.out, /could not answer that automatically/);
   } finally { w.stop(); }
 });

@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chosen, fromPeer, look, parse, people, presenceOf, readable, redact, requests, resultOf, sessions } from "../drawbridge.mjs";
+import { agentOrder, chosen, codexHookBlock, codexSessions, codexSwitches, conversation, fromPeer, look, parse, people, presenceOf, readable, redact, requests, resultOf, sessions, withCodexHook } from "../drawbridge.mjs";
 
 process.env.DRAWBRIDGE_NO_FETCH = "1";
 const comment = (login, body, id = 1) => ({ id, created_at: "2026-01-02T03:04:05Z", user: { login }, body });
@@ -135,4 +135,89 @@ test("the readable opening that people see in their email is taken off again whe
   const answered = parse(comment("grace", "_grace's Claude answers:_\n\n> Is the build green? …\n\nYes.\n\n> a quote that belongs to the answer\n\n<!-- drawbridge v1 from=grace kind=answer ref=cd34 re=ab12 -->"));
   assert.equal(answered.text, "Yes.\n\n> a quote that belongs to the answer");
   assert.equal(parse(comment("grace", "_emphasis_ at the start of a person's own note")).text, "_emphasis_ at the start of a person's own note");
+});
+
+test("the agents are tried in order: a session's own agent first, one that has just failed last, and never one that is not there or not allowed", () => {
+  const now = 1_000_000_000, both = () => true, all = ["claude", "codex"];
+  assert.deepEqual(agentOrder(undefined, now, {}, both, all), ["claude", "codex"]);
+  assert.deepEqual(agentOrder("codex", now, {}, both, all), ["codex", "claude"]);
+  assert.deepEqual(agentOrder("claude", now, { claude: now - 60_000 }, both, all), ["codex", "claude"], "Claude ran out a minute ago, so Codex is tried first");
+  assert.deepEqual(agentOrder("claude", now, { claude: now - 3_600_000 }, both, all), ["claude", "codex"], "an hour later it leads again");
+  assert.deepEqual(agentOrder("codex", now, {}, (agent) => agent === "claude", all), ["claude"], "an agent that is not installed is not tried");
+  assert.deepEqual(agentOrder("codex", now, {}, both, ["claude"]), ["claude"], "nor one the owner switched off");
+  assert.deepEqual(agentOrder("nonsense", now, {}, both, all), ["claude", "codex"]);
+});
+
+test("Drawbridge's hook is added to Codex's settings once, taken out cleanly, and never merged into hooks someone else wrote", () => {
+  const command = 'node "/Users/ada/drawbridge/drawbridge.mjs" inbox --hook --codex', mine = 'model = "m"\n\n[plugins."x"]\nenabled = true\n';
+  const added = withCodexHook(mine, command);
+  assert.ok(added.startsWith(mine.trimEnd()), "what was there is kept, in place");
+  assert.ok(added.endsWith(`${codexHookBlock(command)}\n`));
+  assert.equal(withCodexHook(added, command), added, "adding it again changes nothing");
+  assert.equal(withCodexHook(added, command, false).trim(), mine.trim(), "taking it out leaves the file as it was");
+  assert.equal(withCodexHook("", command), `${codexHookBlock(command)}\n`);
+  for (const theirs of ['[hooks]\nUserPromptSubmit = []\n', '[[hooks.Stop]]\nhooks = []\n', 'hooks.Stop = []\n', 'model = "m"\n  [hooks.state]\n']) {
+    assert.equal(withCodexHook(theirs, command), null, `left alone: ${theirs.split("\n")[0]}`);
+  }
+  assert.equal(withCodexHook(mine, "node '/odd path/drawbridge.mjs' inbox"), null, "a path that cannot be written safely is not written");
+  assert.notEqual(withCodexHook('notify = ["/a/hooks/b"]\n# hooks are great\n', command), null, "the word in a value or a comment is not a hooks table");
+});
+
+test("Codex sessions: only ones a person started, in a shared folder, from the last week, named from Codex's own index", async () => {
+  const home = mkdtempSync(join(tmpdir(), "drawbridge-codex-")), day = join(home, "sessions", "2026", "01", "02");
+  mkdirSync(day, { recursive: true });
+  const write = (id, payload, said = [], age = 0) => {
+    const file = join(day, `rollout-2026-01-02T03-04-05-${id}.jsonl`);
+    writeFileSync(file, [{ type: "session_meta", payload: { id, base_instructions: "x".repeat(2500), ...payload } }, ...said.map(([type, message]) => ({ type: "event_msg", payload: { type, message } }))].map((line) => JSON.stringify(line)).join("\n") + "\n");
+    if (age) utimesSync(file, new Date(Date.now() - age), new Date(Date.now() - age));
+  };
+  const a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", c = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", d = "dddddddd-dddd-4ddd-8ddd-dddddddddddd", e = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  write(a, { cwd: "/work/shop", thread_source: "user" }, [["user_message", "first thing"], ["agent_message", "ok"], ["user_message", "make the \"cart\" faster"]]);
+  write(b, { cwd: "/work/shop", thread_source: "guardian_review" });
+  write(c, { cwd: "/elsewhere", thread_source: "user" });
+  write(d, { cwd: "/work/shop", thread_source: "user" }, [], 9 * 24 * 3600 * 1000);
+  write(e, { cwd: "/work/shop/api" });
+  writeFileSync(join(home, "session_index.jsonl"), `${JSON.stringify({ id: a, thread_name: "Old name" })}\nnot json\n${JSON.stringify({ id: a, thread_name: "Cart speed" })}\n`);
+  const found = await codexSessions(home, async (dir) => dir.startsWith("/work/shop"));
+  assert.deepEqual(found.map((one) => one.id).sort(), [a, e].sort());
+  const cart = found.find((one) => one.id === a);
+  assert.equal(cart.title, "Cart speed");
+  assert.equal(cart.agent, "codex");
+  assert.equal(cart.last, 'make the "cart" faster');
+  assert.equal(found.find((one) => one.id === e).title, "untitled, in api");
+  assert.equal(conversation(cart), 'USER: first thing\n\nAGENT: ok\n\nUSER: make the "cart" faster');
+  // The form Codex writes today: each message is a "response_item", among blocks Codex adds for itself.
+  const item = (role, ...texts) => ({ type: "response_item", payload: { type: "message", role, content: texts.map((text) => ({ type: role === "assistant" ? "output_text" : "input_text", text })) } });
+  const f = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  writeFileSync(join(day, `rollout-2026-01-02T03-04-06-${f}.jsonl`), [{ type: "session_meta", payload: { id: f, cwd: "/work/shop", thread_source: "user", base_instructions: "x".repeat(2500) } },
+    item("developer", "<permissions instructions>be careful"), item("user", "<environment_context>\n  <cwd>/work/shop</cwd>"), item("user", "ship the receipt email"),
+    { type: "event_msg", payload: { type: "token_count" } }, item("assistant", "Done, it is on main.")].map((line) => JSON.stringify(line)).join("\n") + "\n");
+  const receipt = (await codexSessions(home, async (dir) => dir.startsWith("/work/shop"))).find((one) => one.id === f);
+  assert.equal(receipt.last, "ship the receipt email");
+  assert.equal(conversation(receipt), "USER: ship the receipt email\n\nAGENT: Done, it is on main.");
+  assert.deepEqual(await codexSessions(join(home, "nothing-here"), async () => true), []);
+});
+
+test("a conversation handed to another agent is what was said, newest kept, without tool output or keys", () => {
+  const dir = mkdtempSync(join(tmpdir(), "drawbridge-conv-")), file = join(dir, "s.jsonl");
+  const lines = [
+    { type: "user", message: { role: "user", content: "old question " + "a".repeat(5000) } },
+    { type: "user", isMeta: true, message: { role: "user", content: "a system reminder" } },
+    { type: "assistant", isSidechain: true, message: { role: "assistant", content: [{ type: "text", text: "a helper agent's words" }] } },
+    { type: "user", message: { role: "user", content: [{ type: "tool_result", content: "TOOL-OUTPUT" }] } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "the key is sk_live_abcdefgh12345678" }, { type: "tool_use", name: "Bash", input: { command: "ls" } }] } },
+    { type: "user", message: { role: "user", content: "newest question" } }];
+  writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n") + "\nnot json\n");
+  const said = conversation({ agent: "claude", file });
+  assert.match(said, /^USER: old question a+ \[cut\]\n\nAGENT: the key is \[removed: looked like a secret\]\n\nUSER: newest question$/);
+  assert.doesNotMatch(said, /TOOL-OUTPUT|system reminder|helper agent|sk_live/);
+  assert.equal(conversation({ agent: "claude", file }, 40), "USER: newest question", "when there is little room the newest is what is kept");
+  assert.equal(conversation({ agent: "claude", file: join(dir, "missing.jsonl") }), "");
+});
+
+test("Codex is only run with its tools switched off: its own switches are passed, and one without a switch for commands is not used", () => {
+  const listing = "apps                 stable   true\nshell_tool           stable   true\nunified_exec         stable   true\nhooks                stable   true\nsomething_new        under development  false\n";
+  assert.deepEqual(codexSwitches(listing), ["shell_tool", "unified_exec", "apps", "hooks"]);
+  assert.throws(() => codexSwitches("apps stable true\nhooks stable true\n"), /cannot be run without tools/);
+  assert.throws(() => codexSwitches(""), /cannot be run without tools/);
 });
