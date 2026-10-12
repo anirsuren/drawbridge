@@ -44,7 +44,7 @@ else if (/^repos\/[^/]+\/[^/]+$/.test(path)) {
 else if (/\/issues\?/.test(path)) out = change((db) => db.issues.filter((issue) => issue.state === "open"));
 else if (/\/issues$/.test(path) && method === "POST") out = change((db) => { const issue = { number: db.issues.length + 1, title: body.title, state: "open" }; db.issues.push(issue); return issue; });
 else if (/\/issues\/comments\/\d+$/.test(path) && method === "PATCH") out = change((db) => { const id = Number(path.split("/").pop()); const comment = db.comments.find((c) => c.id === id); if (!comment) { console.error("Not Found"); process.exit(1); } comment.body = body.body; comment.updated_at = now(); return comment; });
-else if (/\/issues\/\d+\/comments$/.test(path) && method === "POST") out = change((db) => { const comment = { id: db.next++, issue: Number(path.split("/")[4]), user: { login: LOGIN }, body: body.body, created_at: now(), updated_at: now() }; db.comments.push(comment); return comment; });
+else if (/\/issues\/\d+\/comments$/.test(path) && method === "POST") out = change((db) => { const at = now(), comment = { id: db.next++, issue: Number(path.split("/")[4]), user: { login: LOGIN }, body: body.body, created_at: at, updated_at: at }; db.comments.push(comment); return comment; });
 else if (/\/issues\/\d+\/comments\?/.test(path)) {
   const issue = Number(path.split("/")[4]), since = decodeURIComponent((path.match(/since=([^&]+)/) || [])[1] || "1970-01-01T00:00:00Z");
   const list = change((db) => db.comments.filter((c) => c.issue === issue && c.updated_at >= since));

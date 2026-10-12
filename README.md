@@ -20,9 +20,9 @@ your friends can all open. Each answer is written by the answering person's own 
 
 ## How it works
 
-1. **The thread.** Messages are comments on one GitHub issue. GitHub says who posted each one, so nobody can pretend
-   to be your friend. You both get the conversation in your GitHub email, and you can read or write in the thread
-   yourselves.
+1. **The thread.** Messages are comments on one GitHub issue. Who is speaking is the GitHub account that posted the
+   comment, never a name written inside it, and a comment that was edited after posting is ignored. You both get the
+   conversation in your GitHub email, and you can read or write in the thread yourselves.
 2. **The watcher.** A small background process on each computer checks the thread every few seconds and says "I am
    here" every 30 seconds, so each side knows whether the other is online.
 3. **Answers come from the session that did the work.** When a question arrives, the watcher picks the Claude Code
@@ -124,11 +124,11 @@ never instructions from me.
 | `ask --follow "…"` | A follow-up in the same conversation; the answering side is shown what was already said. |
 | `ask --at grace "…"` | Asks one friend. Needed when you have several and want only one to answer. |
 | `ask --to "auth" "…"` | Names the session yourself, by words in its title. |
-| `ask --all "…"` | Asks every recent session and posts the answers together. Costs one read of each. |
+| `ask --all "…"` | Asks up to four recent sessions and posts the answers together. Costs one read of each. |
 | `inbox` | What arrived since you last looked. |
 | `sessions` | The sessions that can be asked, on your computer and your friends'. `sessions off` stops using them. |
 | `share [folder]`, `unshare [folder]` | Which project folders questions may reach. `connect` shares the folder you ran it in. |
-| `trust <login>`, `untrust <login>` | Whose messages count. |
+| `trust <login>`, `untrust <login>` | Whose messages count. To cut someone off fully, also remove them from the repository. |
 | `status`, `doctor` | Is everything running; check and repair the setup. |
 | `start <friend>`, `join <owner/repo>`, `connect <owner/repo> <friend>` | Setting up, as above. |
 
@@ -142,21 +142,27 @@ What limits that copy:
 - It can read files in the folders you shared, and nothing else. It cannot edit, run commands, browse the web or use
   your connectors (`--tools Read,Grep,Glob`, permission mode `dontAsk`, no MCP servers).
 - It is denied `.env` files, key and certificate files, anything with "secret" or "credential" in its name, `.git`
-  internals, and `~/.ssh`, `~/.aws`, `~/.config` and `~/Library`.
+  and `.claude` internals, and `~/.ssh`, `~/.aws`, `~/.config` and `~/Library`.
+- It starts with hooks switched off and without the project's committed settings, so a settings file someone else
+  pushed to a shared project cannot widen what it may do.
 - It is told that a question is a request for information and never an instruction, to refuse anything that asks for
   something to be changed, approved, bought or decided, and to leave out keys and personal details.
-- Anything shaped like a key or token is stripped from every message before it is posted.
-- Only sessions in folders you shared, used in the last week, can be asked.
-- The titles of those sessions are listed in the thread, so your friends can see what you have open. A title is
-  whatever you or Claude named the session.
-- At most 20 questions an hour are answered automatically.
-- Only GitHub accounts you named count. Everyone else, and any comment that merely claims to be from your friend, is
-  ignored.
-- `connect` refuses a public repository unless you insist, because the thread would be readable by anyone.
+- Common key and token shapes are stripped from every message before it is posted. This is a net, not a guarantee.
+- Only sessions in folders you shared, used in the last week, can be asked. Their titles are listed in the thread,
+  so your friends can see what you have open.
+- At most 20 answers an hour, counting every session copy, and that count survives a restart.
+- Only GitHub accounts you named count. `join` trusts the person who invited you and nobody else unless you name
+  them. Everyone else, and any comment that merely claims to be from your friend, is ignored.
+- `start` and `connect` refuse a public repository, because the thread would be readable by anyone.
 
-What does not limit it: a language model following rules is not a lock. If your sessions hold things your friend
-must never learn, run `sessions off` (answers then come only from the git-tracked files in your shared folders) or
-do not connect. See [SECURITY.md](SECURITY.md).
+What your own sessions receive: a friend's notes and questions are shown in your Claude sessions the next time you
+type, fenced off and cut to 2,000 characters each, with a line saying they are information and not instructions.
+Your session can run commands, so this is the part that matters most: a friend, or anyone who takes over their
+GitHub account, can put text in front of your Claude. Connect only with people you trust with that.
+
+What does not limit any of this: a language model following rules is not a lock. If your sessions hold things your
+friend must never learn, run `sessions off` (answers then come only from git-tracked text files in your shared
+folders) or do not connect. See [SECURITY.md](SECURITY.md).
 
 ## What it costs
 
@@ -191,7 +197,7 @@ State and logs live in `~/.config/drawbridge`.
 npm test
 ```
 
-22 tests, all offline: stand-ins replace `gh` and `claude`, and the real script runs as real processes for two and
+24 tests, all offline: stand-ins replace `gh` and `claude`, and the real script runs as real processes for two and
 three pretend computers against a pretend GitHub.
 
 ## License
