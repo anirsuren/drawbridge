@@ -96,7 +96,7 @@ test("one command sets a computer up, and refuses a public repository or a setup
     assert.match(done.out, /OK {4}gh is signed in as ada/);
     assert.match(done.out, /OK {4}friends: grace/);
     assert.match(done.out, /grace has never connected/);
-    assert.match(done.out, /drawbridge connect test\/repo ada/, "it says what the friend should run");
+    assert.match(done.out, /drawbridge join test\/repo/, "it says what the friend should run");
     const settings = JSON.parse(readFileSync(join(w.a.project, ".claude", "settings.local.json"), "utf8"));
     assert.match(settings.hooks.UserPromptSubmit[0].hooks[0].command, /drawbridge\.mjs" inbox --hook$/);
     await w.run(w.a, ["connect", "test/repo", "grace"]);
@@ -247,5 +247,29 @@ test("sharing and trusting can be changed afterwards", async () => {
     assert.match((await w.run(w.a, ["untrust", "grace"])).out, /Trusted: linus/);
     await w.run(w.b, ["send", "Can you hear me?"]);
     assert.match((await w.run(w.a, ["inbox"])).out, /Nothing new/, "someone no longer trusted is no longer heard");
+  } finally { w.stop(); }
+});
+
+test("start and join: one person begins, the friend joins with one command, and they can talk", async () => {
+  const w = world();
+  try {
+    assert.match((await w.run(w.a, ["start"])).err, /Say who to connect with/);
+    assert.match((await w.run(w.a, ["start", "no-such-user"])).err, /Could not invite no-such-user/);
+    const began = await w.run(w.a, ["start", "@grace"]);
+    assert.equal(began.code, 0, began.out + began.err);
+    assert.match(began.out, /Invited grace to it/);
+    assert.match(began.out, /\nConnected\./);
+    assert.match(began.out, /drawbridge join ada\/drawbridge-thread/, "it says exactly what to send the friend");
+    assert.match((await w.run(w.c, ["join", "ada/drawbridge-thread"])).err, /cannot open/, "someone who was not invited cannot join");
+    const joined = await w.run(w.b, ["join", "ada/drawbridge-thread"]);
+    assert.equal(joined.code, 0, joined.out + joined.err);
+    assert.match(joined.out, /Accepted the invitation/);
+    assert.match(joined.out, /OK {4}friends: ada/);
+    assert.deepEqual(w.state(w.b).people, ["ada"]);
+    assert.equal(w.state(w.a).issue, w.state(w.b).issue);
+    assert.equal((await w.run(w.a, ["start", "grace"])).code, 0, "running start again is harmless");
+    w.watch(w.b);
+    await w.until(async () => (await w.run(w.a, ["status"])).out.includes("grace is online"), "ada sees grace online");
+    assert.match((await w.run(w.a, ["ask", "--wait", "45", "Are we connected?"])).out, /grace answers:\nSTUB ANSWER\. Asked: Are we connected\?/);
   } finally { w.stop(); }
 });

@@ -15,7 +15,7 @@ It holds no credentials of its own and has no server. Everything it remembers is
 | Knows | That session's whole conversation | Nothing but the question |
 | Tools | `Read`, `Grep`, `Glob`, inside the session's folder | None. The script runs fixed read-only `git` commands for it |
 | Can read | Files in the shared folder, except the denied ones | Git-tracked text files in shared folders |
-| Never reads | `.env*`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc`, `.netrc`, `~/.ssh`, `~/.config`, `~/Library` | The same, plus anything git does not track |
+| Never reads | The `DENIED` list in `drawbridge.mjs`: `.env*`, key and certificate files, names containing "secret" or "credential", `.git` internals, `.npmrc`, `.netrc`, `~/.ssh`, `~/.aws`, `~/.config`, `~/Library` | Key and `.env` files, plus anything git does not track |
 | Can change or run things | No | No |
 | Saved afterwards | Nothing (`--fork-session --no-session-persistence`) | Nothing |
 

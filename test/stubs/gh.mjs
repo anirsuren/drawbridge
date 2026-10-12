@@ -22,14 +22,25 @@ function change(edit) {
 const args = process.argv.slice(2).filter((arg) => arg !== "api");
 const flag = (name) => args.includes(name);
 const method = flag("--method") ? args[args.indexOf("--method") + 1] : "GET";
-const path = args.find((arg) => arg.startsWith("repos/") || arg === "user");
+const path = args.find((arg) => arg.startsWith("repos/") || arg.startsWith("user"));
 const body = flag("--input") ? JSON.parse(readFileSync(0, "utf8")) : null;
 // The tests switch "GitHub" off by creating this file, and back on by removing it.
 if (process.env.STUB_GH_FAIL || existsSync(DB + ".down")) { console.error("error connecting to api.github.com"); process.exit(1); }
 const now = () => new Date().toISOString();
 let out;
 if (path === "user") out = { login: LOGIN };
-else if (/^repos\/[^/]+\/[^/]+$/.test(path)) out = { full_name: path.slice(6), private: !process.env.STUB_PUBLIC_REPO };
+// Repositories, collaborators and invitations, for "start" and "join". A repository exists once it was created or if STUB_REPO_EXISTS names it.
+else if (path === "user/repos" && method === "POST") out = change((db) => { db.repos = db.repos || {}; const full = `${LOGIN}/${body.name}`; db.repos[full] = { owner: LOGIN, private: body.private === true, people: [LOGIN], invited: [] }; return { full_name: full, private: body.private === true }; });
+else if (path === "user/repository_invitations") out = change((db) => Object.entries(db.repos || {}).filter(([, repo]) => repo.invited.includes(LOGIN)).map(([full], index) => ({ id: index + 1, repository: { full_name: full } })));
+else if (/^user\/repository_invitations\/\d+$/.test(path) && method === "PATCH") out = change((db) => { const mine = Object.values(db.repos || {}).filter((repo) => repo.invited.includes(LOGIN))[Number(path.split("/").pop()) - 1]; if (!mine) { console.error("Not Found"); process.exit(1); } mine.invited = mine.invited.filter((name) => name !== LOGIN); mine.people.push(LOGIN); return {}; });
+else if (/^repos\/[^/]+\/[^/]+\/collaborators\/[^/?]+$/.test(path) && method === "PUT") out = change((db) => { const [, owner, name, , friend] = path.split("/"); const repo = (db.repos || {})[`${owner}/${name}`]; if (!repo || friend === "no-such-user") { console.error("Not Found (HTTP 404)"); process.exit(1); } if (!repo.people.includes(friend) && !repo.invited.includes(friend)) repo.invited.push(friend); return {}; });
+else if (/^repos\/[^/]+\/[^/]+\/collaborators\?/.test(path)) out = change((db) => { const repo = (db.repos || {})[path.split("/").slice(1, 3).join("/")]; if (!repo || !repo.people.includes(LOGIN)) { console.error("Not Found"); process.exit(1); } return repo.people.map((login) => ({ login })); });
+else if (/^repos\/[^/]+\/[^/]+$/.test(path)) {
+  const made = change((db) => (db.repos || {})[path.slice(6)]);
+  if (made) { if (!made.people.includes(LOGIN)) { console.error("Not Found (HTTP 404)"); process.exit(1); } out = { full_name: path.slice(6), private: made.private }; }
+  else if (path === "repos/test/repo") out = { full_name: "test/repo", private: !process.env.STUB_PUBLIC_REPO };
+  else { console.error("Not Found (HTTP 404)"); process.exit(1); }
+}
 else if (/\/issues\?/.test(path)) out = change((db) => db.issues.filter((issue) => issue.state === "open"));
 else if (/\/issues$/.test(path) && method === "POST") out = change((db) => { const issue = { number: db.issues.length + 1, title: body.title, state: "open" }; db.issues.push(issue); return issue; });
 else if (/\/issues\/comments\/\d+$/.test(path) && method === "PATCH") out = change((db) => { const id = Number(path.split("/").pop()); const comment = db.comments.find((c) => c.id === id); if (!comment) { console.error("Not Found"); process.exit(1); } comment.body = body.body; comment.updated_at = now(); return comment; });

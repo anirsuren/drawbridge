@@ -5,7 +5,9 @@
 // is no server, no new account, no API key, and a history anyone in the group can read. Who sent a message is the
 // GitHub account that posted it, which GitHub vouches for. Answers come from each person's own Claude sign-in.
 //
-//   drawbridge connect <owner/repo> <friend> [more friends]   set this computer up (run it in your project folder)
+//   drawbridge start <friend> [more friends]   begin: private repository, invitations, this computer (run in your project folder)
+//   drawbridge join <owner/repo>               a friend who was invited: accept, and set this computer up
+//   drawbridge connect <owner/repo> <friend>   the same by hand, with a repository you already share
 //   drawbridge send "text"                 tell your friends' Claudes something
 //   drawbridge ask "question"              ask, and wait for a friend's Claude to answer
 //   drawbridge ask --at <login> "…"        ask one particular friend (needed when there are several)
@@ -250,7 +252,9 @@ function hook(folder, on = true) {
 
 const USAGE = `Drawbridge: your Claude Code sessions, talking to a friend's.
 
-  drawbridge connect <owner/repo> <friend> [more]   set this computer up; run it in your project folder
+  drawbridge start <friend> [more]        begin: makes a private repository, invites your friends, sets this computer up
+  drawbridge join <owner/repo>            a friend who was invited: accept and set this computer up
+  drawbridge connect <owner/repo> <friend> [more]   the same by hand, with a repository you already share
   drawbridge send "text"                  tell your friends' Claudes something
   drawbridge ask "question"               ask, and wait for the answer
   drawbridge ask --at <login> "..."       ask one friend (needed when you have several)
@@ -286,6 +290,46 @@ const commands = {
       ...(same ? {} : { issue: null, epoch: null, presenceId: null, watched: null, seen: {}, consumed: [], lastConv: null }) });
     REPO = repo;
     return commands.doctor(load());
+  },
+
+  /**
+   * For the person who begins: makes a private repository for the thread, invites each friend to it, and connects
+   * this computer. Then each friend runs "join" with the repository's name.
+   */
+  async start(_state, words, flags) {
+    const friends = words.map((name) => name.replace(/^@/, "")).filter(Boolean);
+    if (!friends.length) throw new Error("Say who to connect with (their GitHub username):\n  drawbridge start friend-login");
+    let login = "";
+    try { login = (await api("user")).login; } catch { throw new Error("gh is not signed in. Run: gh auth login"); }
+    const repo = flags.repo && flags.repo.includes("/") ? flags.repo : `${login}/${flags.repo || "drawbridge-thread"}`;
+    let info = await api(`repos/${repo}`).catch(() => null);
+    if (!info) {
+      if (repo.split("/")[0] !== login) throw new Error(`${repo} does not exist, and only its owner can create it.`);
+      info = await api("user/repos", { name: repo.split("/")[1], private: true, has_issues: true, description: "Where our Claude Code sessions talk (Drawbridge)." });
+      console.log(`Created the private repository https://github.com/${repo}`);
+    }
+    if (info.private !== true) throw new Error(`${repo} is public. Drawbridge will not put your Claudes' conversation where anyone can read it.`);
+    for (const friend of friends) {
+      try { await gh(["api", "--method", "PUT", `repos/${repo}/collaborators/${friend}`]); console.log(`Invited ${friend} to it. GitHub has emailed them.`); }
+      catch (error) { throw new Error(`Could not invite ${friend} to ${repo}: ${String(error.stderr || error.message || error).trim().split("\n")[0]}. Check the username.`); }
+    }
+    await commands.connect(load(), [repo, ...friends], flags);
+    console.log(`\nSend each friend this, to run in their own project folder once Drawbridge is on their computer:\n  drawbridge join ${repo}`);
+  },
+
+  /** For a friend who was invited: accepts the invitation, trusts the people already there, and connects this computer. */
+  async join(_state, words, flags) {
+    const [repo] = words;
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo || "")) throw new Error("Say which repository you were invited to, as your friend gave it to you:\n  drawbridge join owner/repo");
+    let login = "";
+    try { login = (await api("user")).login; } catch { throw new Error("gh is not signed in. Run: gh auth login"); }
+    const invites = await api("user/repository_invitations").catch(() => []);
+    const mine = invites.find((invite) => invite.repository?.full_name?.toLowerCase() === repo.toLowerCase());
+    if (mine) { await gh(["api", "--method", "PATCH", `user/repository_invitations/${mine.id}`]); console.log(`Accepted the invitation to ${repo}.`); }
+    // Everyone who can already write to the thread is a friend here; at the least, the person who owns it.
+    const there = await api(`repos/${repo}/collaborators?per_page=100`).catch(() => []);
+    const friends = unique([repo.split("/")[0], ...there.map((one) => one.login)]).filter((name) => name !== login);
+    return commands.connect(load(), [repo, ...friends], flags);
   },
 
   /**
@@ -367,7 +411,7 @@ const commands = {
 
     const allOk = results.every((result) => result.ok);
     for (const result of results) console.log(`${result.ok ? "OK  " : "FAIL"}  ${result.what}${result.ok ? "" : `\n      Fix: ${result.fix}`}`);
-    console.log(allOk ? `\nConnected. ${describe(await peers(load()).catch(() => undefined), load())}\nEach friend runs the same command on their computer, naming you: drawbridge connect ${REPO} ${state.login}` : "\nNot connected yet. Fix the FAIL lines above and run this again.");
+    console.log(allOk ? `\nConnected. ${describe(await peers(load()).catch(() => undefined), load())}\nA friend who has not connected yet runs, in their own project folder: drawbridge join ${REPO}` : "\nNot connected yet. Fix the FAIL lines above and run this again.");
     if (!allOk) process.exitCode = 1;
   },
 
@@ -753,9 +797,13 @@ export async function sessions(root = PROJECTS, belongs = isShared) {
 
 const matches = (session, words) => String(words).toLowerCase().split(/\s+/).filter(Boolean).every((word) => `${session.title} ${session.cwd}`.toLowerCase().includes(word));
 
+/** Files a session copy may never open, whatever it is asked. Claude Code applies Read rules to Grep and Glob as well. */
+export const DENIED = ["**/.env*", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.keystore", "**/id_rsa*", "**/id_ed25519*", "**/.npmrc", "**/.netrc", "**/.pypirc",
+  "**/.git/**", "**/.aws/**", "**/.ssh/**", "**/.gnupg/**", "**/*secret*", "**/*credential*", "**/*.tfstate*", "**/*.kdbx", "~/.ssh/**", "~/.config/**", "~/.aws/**", "~/Library/**"];
+
 /** Asks a throwaway copy of one session. Resolves to its reply, or rejects when the copy could not be started. */
 function speak(session, prompt, system) {
-  const settings = JSON.stringify({ permissions: { deny: ["Read(**/.env*)", "Read(**/*.pem)", "Read(**/*.key)", "Read(**/id_rsa*)", "Read(~/.ssh/**)", "Read(~/.config/**)", "Read(~/Library/**)", "Read(**/.npmrc)", "Read(**/.netrc)"] } });
+  const settings = JSON.stringify({ permissions: { deny: DENIED.map((path) => `Read(${path})`) } });
   const args = ["-p", prompt, "--resume", session.id, "--fork-session", "--no-session-persistence", "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk",
     "--setting-sources", "project", "--settings", settings, "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--append-system-prompt", system, "--output-format", "json"];
   return new Promise((done, fail) => {
@@ -906,7 +954,7 @@ if (process.argv[1] && resolve(process.argv[1]) === SELF) {
     else if (rest[i] === "--all") flags.all = true;
     else if (rest[i] === "--follow") flags.follow = true;
     else if (rest[i] === "--public") flags.public = true;
-    else if (["--kind", "--wait", "--conv", "--to", "--at"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
+    else if (["--kind", "--wait", "--conv", "--to", "--at", "--repo"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
     else words.push(rest[i]);
   }
   const command = commands[name === "--help" || name === "-h" ? "help" : name];
@@ -915,9 +963,9 @@ if (process.argv[1] && resolve(process.argv[1]) === SELF) {
   Promise.resolve().then(() => {
     const state = load();
     REPO = REPO || state.repo || "";
-    if (!REPO && !["help", "connect", "share", "unshare", "trust", "untrust"].includes(name)) {
+    if (!REPO && !["help", "start", "join", "connect", "share", "unshare", "trust", "untrust"].includes(name)) {
       if (flags.hook) return undefined;
-      throw new Error("Not connected yet. In your project folder, run:\n  drawbridge connect owner/repo friend-login");
+      throw new Error("Not connected yet. In your project folder, run one of:\n  drawbridge start friend-login      (you are beginning)\n  drawbridge join owner/repo         (a friend invited you)");
     }
     return command(state, words, flags);
   }).catch((error) => {
