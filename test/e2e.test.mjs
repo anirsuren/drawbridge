@@ -61,7 +61,9 @@ function world() {
       const end = Date.now() + ms;
       for (;;) { let ok = false; try { ok = await check(); } catch { ok = false; } if (ok) return; if (Date.now() > end) assert.fail(`timed out waiting for: ${what}`); await sleep(150); }
     },
-    stop() { for (const child of children) child.kill(); rmSync(dir, { recursive: true, force: true }); },
+    // A watcher that was just told to stop may still be finishing a write, so removing the folder is retried, and a
+    // folder that will not go is left for the system to clear: that is not what any test is about.
+    stop() { for (const child of children) child.kill(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch { /* left behind */ } },
   };
   return api;
 }
