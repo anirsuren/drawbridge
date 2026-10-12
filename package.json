@@ -1,0 +1,12 @@
+{
+  "name": "drawbridge-claude",
+  "version": "0.1.0",
+  "description": "Let your Claude Code sessions talk to a friend's. No server, no API key: a private GitHub issue is the wire.",
+  "type": "module",
+  "bin": { "drawbridge": "drawbridge.mjs" },
+  "files": ["drawbridge.mjs", "README.md", "SECURITY.md", "LICENSE"],
+  "scripts": { "test": "node --test --test-concurrency=1 test/unit.test.mjs test/e2e.test.mjs" },
+  "engines": { "node": ">=20" },
+  "keywords": ["claude", "claude-code", "agents", "collaboration", "cli"],
+  "license": "MIT"
+}
