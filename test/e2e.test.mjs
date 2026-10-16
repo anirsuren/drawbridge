@@ -225,7 +225,7 @@ test("a failing Claude, a hook that fails as Claude shuts down, and GitHub going
     await connected(w);
     const broken = w.watch(w.b, { STUB_CLAUDE_FAIL: "1" });
     await w.until(async () => (await w.run(w.a, ["status"])).out.includes("grace is online"), "grace online");
-    assert.match((await w.run(w.a, ["ask", "--wait", "45", "Will this work?"])).out, /could not answer that automatically/);
+    assert.match((await w.run(w.a, ["ask", "--wait", "45", "Will this work?"])).out, /The automatic answer failed: .*The question is waiting/);
     broken.kill();
     w.watch(w.b, { STUB_CLAUDE_HOOK_FAIL: "1" });
     await sleep(800);
@@ -416,6 +416,6 @@ test("the owner can keep each conversation with its own agent: with one agent na
     assert.doesNotMatch((await w.run(w.a, ["sessions"])).out, /Hidden from friends/, "a session of an agent that is switched off is not offered");
     const asked = await w.run(w.a, ["ask", "--wait", "45", "What is on the roadmap?"]);
     assert.doesNotMatch(asked.out, /CODEX/);
-    assert.match(asked.out, /could not answer that automatically/);
+    assert.match(asked.out, /The automatic answer failed: .*The question is waiting/);
   } finally { w.stop(); }
 });

@@ -42,6 +42,8 @@ const LOG = join(DIR, "drawbridge.log");
 const POLL_MS = Number(process.env.DRAWBRIDGE_POLL_MS) || 4000;
 /** Each watcher says "I am here" this often; friends call it offline after ONLINE_MS without one. */
 const BEAT_MS = Number(process.env.DRAWBRIDGE_BEAT_MS) || 30000;
+/** How often a waiting "ask" says what is happening. */
+const PROGRESS_MS = Number(process.env.DRAWBRIDGE_PROGRESS_MS) || 60000;
 const ONLINE_MS = Number(process.env.DRAWBRIDGE_ONLINE_MS) || 90000;
 const GH = process.env.DRAWBRIDGE_GH || "gh";
 const ANSWERS_PER_HOUR = 20;
@@ -583,11 +585,19 @@ const commands = {
       return;
     }
     const limit = Date.now() + Number(flags.wait || 3600) * 1000;
-    let told = false;
+    const started = Date.now();
+    let told = false, said = Date.now();
+    console.log(`Delivered (ref ${ref}). Waiting for it to be picked up; progress is shown here every minute.`);
     while (Date.now() < limit) {
       await new Promise((done) => setTimeout(done, POLL_MS));
       // A friend's watcher says which questions it has picked up, so "delivered and being thought about" can be told from "not delivered".
-      if (!told && (await peers(state).catch(() => []))?.some((one) => one.working.includes(ref))) { told = true; console.log("Your question was picked up and the answer is being written. There is no time limit on that."); }
+      if (!told && (await peers(state).catch(() => []))?.some((one) => one.working.includes(ref))) { told = true; said = Date.now(); console.log("Your question was picked up and is being thought about. There is no time limit on that."); }
+      // Never a silent wait: say every minute what is happening.
+      if (Date.now() - said >= PROGRESS_MS) {
+        said = Date.now();
+        const minutes = Math.round((Date.now() - started) / 60000);
+        console.log(told ? `Still thinking (${minutes} min so far).` : `Not picked up yet (${minutes} min). The watcher may be finishing an earlier question.`);
+      }
       // The network dropping for a moment must not end the wait: the question is already posted, so just look again.
       const answers = (await since(state, before).catch(() => [])).filter((message) => message.kind === "answer" && message.re === ref && fromPeer(message, state) && waiting.has(message.login.toLowerCase()));
       for (const answer of answers) {
@@ -694,7 +704,7 @@ const commands = {
               && ((old.kind === "question" && fromPeer(old, state)) || (old.kind === "answer" && old.login === state.login))) : [];
             const reply = earlier.filter((old) => old.kind === "question").length >= 30
               ? "This conversation has reached 30 questions. Please start a new one (ask without --follow) so it stays readable."
-              : await answer(message, state, earlier).catch((error) => `I could not answer that automatically (${String(error.message || error).slice(0, 200)}). ${state.name} will see the question.`);
+              : await answer(message, state, earlier).catch((error) => `The automatic answer failed: ${String(error.message || error).slice(0, 300)}. The question is waiting for ${state.name}'s open sessions, which reply when they next run; that can take several minutes.`);
             await post(state, "answer", reply, { re: message.ref, conv: message.conv, asked: message.text });
             log(`answered ${message.id}`);
             working.delete(message.ref);
@@ -742,7 +752,7 @@ function claude(args, prompt, cwd, settings = {}) {
       // that fails while Claude is shutting down (seen on a real machine) must not throw a good answer away.
       const text = resultOf(out);
       if (text) done(text);
-      else fail(new Error((err.trim() || out.trim()).split("\n").pop().slice(0, 300) || `claude exited with ${code}`));
+      else fail(new Error(failureOf(out, err, code)));
     });
     child.stdin.end(prompt);
   });
@@ -858,6 +868,24 @@ async function think(prompt, system) {
 }
 
 /** The model's reply from `claude --output-format json`, or "" when the run did not produce one (not signed in, an API error). */
+/**
+ * Why a Claude run gave no answer, in words. The JSON result line carries the reason (a usage limit, a prompt
+ * that is too long, not signed in) in its "result" field, which used to be cut off at 300 characters of JSON.
+ */
+export function failureOf(output, errors = "", code = null) {
+  for (const line of String(output).trim().split("\n").reverse()) {
+    try {
+      const parsed = JSON.parse(line);
+      const result = Array.isArray(parsed) ? parsed.findLast?.((entry) => entry?.type === "result") : parsed;
+      if (result?.type !== "result") continue;
+      const said = typeof result.result === "string" && result.result.trim() ? result.result.trim() : "";
+      const why = [said, result.subtype && result.subtype !== "success" ? result.subtype : "", result.api_error_status ? `status ${result.api_error_status}` : ""].filter(Boolean).join("; ");
+      return (why || "Claude finished without writing an answer").replace(/\s+/g, " ").slice(0, 300);
+    } catch { /* not the result line */ }
+  }
+  return (String(errors).trim() || String(output).trim()).split("\n").pop().slice(0, 300) || `claude exited with ${code}`;
+}
+
 export function resultOf(output) {
   for (const line of output.trim().split("\n").reverse()) {
     try {

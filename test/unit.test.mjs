@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentOrder, chosen, codexHookBlock, codexSessions, codexSwitches, conversation, fromPeer, look, parse, people, presenceOf, readable, redact, requests, resultOf, sessions, withCodexHook } from "../drawbridge.mjs";
+import { agentOrder, chosen, codexHookBlock, failureOf, codexSessions, codexSwitches, conversation, fromPeer, look, parse, people, presenceOf, readable, redact, requests, resultOf, sessions, withCodexHook } from "../drawbridge.mjs";
 
 process.env.DRAWBRIDGE_NO_FETCH = "1";
 const comment = (login, body, id = 1) => ({ id, created_at: "2026-01-02T03:04:05Z", user: { login }, body });
@@ -220,4 +220,13 @@ test("Codex is only run with its tools switched off: its own switches are passed
   assert.deepEqual(codexSwitches(listing), ["shell_tool", "unified_exec", "apps", "hooks"]);
   assert.throws(() => codexSwitches("apps stable true\nhooks stable true\n"), /cannot be run without tools/);
   assert.throws(() => codexSwitches(""), /cannot be run without tools/);
+});
+
+test("a run that gave no answer is reported with its own reason, not as cut-off JSON", () => {
+  const limited = JSON.stringify({ type: "result", subtype: "success", is_error: true, duration_api_ms: 0, result: "Claude usage limit reached. Your limit will reset at 5pm.", stop_reason: "stop_sequence", usage: { input_tokens: 0 } });
+  assert.equal(failureOf(limited), "Claude usage limit reached. Your limit will reset at 5pm.");
+  assert.equal(failureOf(JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true })), "error_during_execution");
+  assert.equal(failureOf(JSON.stringify({ type: "result", is_error: true, result: "" })), "Claude finished without writing an answer");
+  assert.equal(failureOf("", "Not logged in\n"), "Not logged in");
+  assert.equal(failureOf("", "", 7), "claude exited with 7");
 });

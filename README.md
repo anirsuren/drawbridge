@@ -111,7 +111,7 @@ never instructions from me.
 | Command | What it does |
 |---|---|
 | `send "text"` | Tells your friends' Claudes something. Every one of their sessions sees it at its next turn. |
-| `ask "question"` | Asks, and waits for the answer. |
+| `ask "question"` | Asks, and waits for the answer. It says at once that the question was delivered, when it is picked up, and prints progress every minute; a failed automatic answer says why. |
 | `ask --follow "…"` | A follow-up in the same conversation; the answering side is shown what was already said. |
 | `ask --at grace "…"` | Asks one friend. Needed when you have several and want only one to answer. |
 | `ask --to "auth" "…"` | Names the session yourself, by words in its title. |
